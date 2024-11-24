@@ -15,88 +15,67 @@ using namespace std;
 
 pthread_barrier_t bar;
 static pthread_mutex_t outputlock;
-
-struct thread_info_t
+typedef struct
 {
     pthread_t thread_id;
-    int num_threads;
-    int sched_policies;
-    int sched_priorities;
+    int thread_num;
+    int sched_policy;
+    int sched_priority;
     double time_wait;
-};
+} thread_info_t;
 
 static double thr_clock(void)
 {
     struct timespec t;
     assert(clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t) == 0);
-    return t.tv_sec + 1e-9 * t.tv_nsec;
+    return 1e-9 * t.tv_nsec + t.tv_sec;
 }
 
-vector<string> split(const string &str, const string &separator)
+vector<string> split(string str, string seperator)
 {
     vector<string> new_str;
-    size_t start = 0, end;
-
-    while ((end = str.find(separator, start)) != string::npos)
+    size_t pos = 0;
+    while ((pos = str.find(seperator)) != string::npos)
     {
-        new_str.push_back(str.substr(start, end - start));
-        start = end + separator.length();
+        string token = str.substr(0, pos); // store the substring
+        new_str.push_back(token);
+        str.erase(0, pos + seperator.length()); /* erase() function store the current positon and move to next token. */
     }
-    new_str.push_back(str.substr(start));
+    new_str.push_back(str); // it print last token of the string.
     return new_str;
 }
 
 void *thread_func(void *arg)
 {
-    thread_info_t *threadParams = static_cast<thread_info_t *>(arg);
-
-    /* 1. Wait until all threads are ready */
+    thread_info_t *threadParams = (thread_info_t *)arg;
     pthread_barrier_wait(&bar);
-
-    /* 2. Do the task */
     for (int i = 0; i < 3; i++)
     {
         pthread_mutex_lock(&outputlock);
-        cout << "Thread " << threadParams->num_threads << " is starting" << endl;
-        pthread_mutex_unlock(&outputlock);
-
-        // Busy for time_wait seconds
-        double start_time = thr_clock();
-        while (thr_clock() - start_time < threadParams->time_wait)
         {
-            // Busy wait loop
+            cout << "Thread " << threadParams->thread_num << " is starting" << endl;
+            fflush(stdout);
+            double sttime = thr_clock();
+            while (1)
+            {
+                if (thr_clock() - sttime > 1 * threadParams->time_wait)
+                    break;
+            }
         }
+        pthread_mutex_unlock(&outputlock);
     }
-
     pthread_exit(0);
-}
-
-void print_scheduler(void)
-{
-    int schedType = sched_getscheduler(getpid());
-
-    switch (schedType)
-    {
-    case SCHED_FIFO:
-        printf("SCHED_FIFO\n");
-        break;
-    case SCHED_OTHER:
-        printf("SCHED_OTHER\n");
-        break;
-    default:
-        printf("UNKNOWN\n");
-    }
 }
 
 int main(int argc, char **argv)
 {
     int numOfThread = 0;
-    double waitTime = 0.0;
+    float waitTime = 0.0f;
     vector<string> policy;
+    vector<string> temp;
     vector<int> priorities;
     int cmd_opt = 0;
 
-    /* 1. Parse program arguments */
     while ((cmd_opt = getopt(argc, argv, "n:t:s:p:")) != -1)
     {
         switch (cmd_opt)
@@ -108,78 +87,85 @@ int main(int argc, char **argv)
             waitTime = atof(optarg);
             break;
         case 's':
-            policy = split(optarg, ",");
+            policy = split(string(optarg), ",");
             break;
         case 'p':
-            for (const auto &p : split(optarg, ","))
+            temp = split(string(optarg), ",");
+            for (size_t i = 0; i < temp.size(); i++) // Changed int to size_t
             {
-                priorities.push_back(stoi(p));
+                priorities.push_back(stoi(temp[i]));
             }
             break;
         case '?':
-            cerr << "Illegal option: " << static_cast<char>(optopt) << endl;
+            cerr << "Illegal option: " << isprint(optopt) << endl;
             return 1;
         default:
-            cerr << "Unsupported option" << endl;
+            cerr << "not support options" << endl;
         }
     }
 
-    /* check for non-option arguments */
-    for (int index = optind; index < argc; index++)
-        cerr << "Non-option argument " << argv[index] << endl;
+    vector<thread_info_t> threadParams(numOfThread); // Changed to vector
+    vector<pthread_attr_t> sched_attr(numOfThread);  // Changed to vector
+    vector<struct sched_param> sched_param(numOfThread); // Changed to vector
 
-    /* 2. Create <num_threads> worker threads */
-    vector<thread_info_t> threadParams(numOfThread);
-    vector<pthread_attr_t> sched_attr(numOfThread);
-    vector<struct sched_param> sched_param(numOfThread);
+    pthread_barrier_init(&bar, NULL, numOfThread);
 
-    pthread_barrier_init(&bar, nullptr, numOfThread);
-
-    for (int i = 0; i < numOfThread; i++)
-    {
-        threadParams[i].num_threads = i;
-        threadParams[i].sched_policies = (policy[i] == "NORMAL") ? SCHED_OTHER : SCHED_FIFO;
-        threadParams[i].sched_priorities = priorities[i];
-        threadParams[i].time_wait = waitTime;
-    }
-
-    /* 3. Set CPU affinity */
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(0, &cpuset);
-
     for (int i = 0; i < numOfThread; i++)
     {
-        /* 4. Set the attributes to each thread */
+        threadParams[i].thread_num = i;
+        if (policy[i] == "NORMAL")
+        {
+            threadParams[i].sched_policy = 0;
+        }
+        else
+        {
+            threadParams[i].sched_policy = 1;
+        }
+        threadParams[i].sched_priority = priorities[i];
+        threadParams[i].time_wait = waitTime;
+
         pthread_attr_init(&sched_attr[i]);
         pthread_attr_setinheritsched(&sched_attr[i], PTHREAD_EXPLICIT_SCHED);
-        pthread_attr_setschedpolicy(&sched_attr[i], threadParams[i].sched_policies);
+        if (threadParams[i].sched_policy == 0)
+        {
+            pthread_attr_setschedpolicy(&sched_attr[i], SCHED_OTHER);
+        }
+        else
+        {
+            pthread_attr_setschedpolicy(&sched_attr[i], SCHED_FIFO);
+        }
+
         pthread_attr_setaffinity_np(&sched_attr[i], sizeof(cpu_set_t), &cpuset);
 
-        sched_param[i].sched_priority = (threadParams[i].sched_policies == SCHED_OTHER) ? 
-                                        sched_get_priority_max(SCHED_OTHER) : threadParams[i].sched_priorities;
-
-        if (sched_setscheduler(getpid(), threadParams[i].sched_policies, &sched_param[i]) < 0)
+        if (threadParams[i].sched_policy == 0)
         {
-            cerr << "[ Set scheduler fail ]" << strerror(errno) << endl;
+            sched_param[i].sched_priority = sched_get_priority_max(SCHED_OTHER);
+            if (sched_setscheduler(getpid(), SCHED_OTHER, &sched_param[i]) < 0)
+            {
+                cerr << "[ Set scheduler fail - NORMAL]" << strerror(errno) << endl;
+            }
+        }
+        else
+        {
+            sched_param[i].sched_priority = threadParams[i].sched_priority;
+            if (sched_setscheduler(getpid(), SCHED_FIFO, &sched_param[i]) < 0)
+            {
+                cerr << "[ Set scheduler fail ]" << strerror(errno) << endl;
+            }
         }
 
         pthread_attr_setschedparam(&sched_attr[i], &sched_param[i]);
-
-        pthread_create(&threadParams[i].thread_id, // Pointer to thread descriptor
-                       &sched_attr[i],             // Use default attributes
-                       thread_func,                // Thread function entry point
-                       (void *)&(threadParams[i])  // Parameters to pass in
-        );
+        pthread_create(&threadParams[i].thread_id, &sched_attr[i], thread_func, (void *)&(threadParams[i]));
     }
 
-    /* 5. Start all threads at once */
     for (int i = 0; i < numOfThread; i++)
     {
-        pthread_join(threadParams[i].thread_id, nullptr);
+        pthread_join(threadParams[i].thread_id, NULL);
     }
 
-    /* 6. Wait for all threads to finish  */
     pthread_barrier_destroy(&bar);
     return 0;
 }
